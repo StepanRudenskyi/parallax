@@ -19,6 +19,32 @@ services:
     networks:
       - trading_network
 
+#  agents:
+#    build:
+#      context: ../agents
+#      dockerfile: Dockerfile
+#    container_name: ai-trading-agents
+#    restart: unless-stopped
+#    env_file:
+#      - ../agents/.env
+#    environment:
+#      # Overrides for .env values that differ inside the Docker network
+#      # vs. running the service directly on the host.
+#      POSTGRES_HOST: postgres
+#      POSTGRES_PORT: "5432"
+#    ports:
+#      - "8000:8000"
+#    depends_on:
+#      postgres:
+#        condition: service_healthy
+#    networks:
+#      - trading_network
+#
+#  # Next services added as their phases land:
+#  # execution-api: Java Spring Boot + ta4j      (Phase 3+)
+#  # web:           Next.js                       (Phase 4+)
+#  # ollama:        local LLM                      (optional, when hardware allows)
+
 volumes:
   postgres_data:
     driver: local

@@ -1,129 +1,230 @@
-# Architecture Decision Log
+# Architectural Decisions Log
 
-This log records the reasoning behind significant technical decisions, in lightweight ADR (Architecture Decision Record) format. Each entry captures the context, the decision, and the consequences, so the rationale is not lost as the project evolves over an extended, part-time timeline.
-
----
-
-## ADR-001: Monorepo instead of multiple repositories
-
-**Context:** The project spans three languages/runtimes (Python, Java, Next.js/TypeScript) plus infrastructure config. Multi-repo setups are common in team environments to allow independent versioning and access control.
-
-**Decision:** Use a single monorepo (`agents/`, `execution/`, `web/`, `data/`, `infra/`, `docs/`).
-
-**Rationale:** This is a solo project developed at irregular, low-frequency intervals (evenings/weekends). Multi-repo setups introduce synchronization overhead (a Python-side contract change breaking an unreleased Java-side assumption, coordinating PRs across repos) that is disproportionately costly for a single developer working in short, spaced-out sessions. A monorepo keeps all context in one place and one Git history.
-
-**Consequences:** CI/CD (when eventually introduced) will need path-based triggers to avoid rebuilding all services on every commit. This is an acceptable future cost given the current benefit.
+> Living document, append-only in spirit — new entries go at the bottom. Each entry
+> should capture: what was decided, why, and what alternative was rejected. This
+> exists so that, months from now, we don't re-litigate a decision without
+> remembering why it was made.
 
 ---
 
-## ADR-002: PostgreSQL instead of TimescaleDB (for now)
+### 2026-09-26 — Monorepo over multiple repositories
 
-**Context:** The project stores time-series OHLCV data. TimescaleDB is a PostgreSQL extension purpose-built for time-series workloads (hypertables, compression policies).
+**Decision:** Single repository (`ai-trading-agent`) containing `agents/`
+(Python), `execution/` (Java, later), `web/` (Next.js, later), `data/` (migrations),
+and `infra/` (Docker Compose).
 
-**Decision:** Use plain PostgreSQL. Do not install TimescaleDB at this stage.
-
-**Rationale:** At hobby scale (a handful of tickers, daily/hourly bars), plain PostgreSQL is fully sufficient — TimescaleDB's advantages (compression, specialized time-partitioning) only become material at intraday/tick-level data volumes across many instruments. Installing it now would be a premature optimization that adds operational complexity (extension management, hypertable configuration) without a corresponding benefit.
-
-**Consequences:** If the project later ingests minute/tick-level data across many instruments (particularly relevant for the Phase 6+ crypto extension), TimescaleDB should be re-evaluated at that point. The `price_bar` schema (single flat table, timestamp column, composite unique index) is compatible with a later conversion to a TimescaleDB hypertable without a data model rewrite.
-
----
-
-## ADR-003: REST first, gRPC evaluated later, for Python↔Java communication
-
-**Context:** The Python AI backend and Java Execution service need to exchange recommendation and backtest data.
-
-**Decision:** Use REST/HTTPS with JSON payloads initially. Do not introduce gRPC at this stage.
-
-**Rationale:** REST requires no additional tooling (protobuf schema definitions, code generation pipeline) and is sufficient for the current request volume and latency requirements (a handful of manual analysis requests per session). Introducing gRPC now would add setup and learning overhead disproportionate to the current need, particularly given the developer's stated unfamiliarity with the Python AI/LLM stack — one new technology at a time is preferable to stacking unfamiliar tools.
-
-**Consequences:** If request volume or latency requirements increase substantially (e.g., high-frequency backtesting loops), gRPC with protobuf-defined contracts should be reconsidered. Because the REST contract is already narrow and JSON-schema-defined, migrating specific endpoints to gRPC later is a bounded, incremental change rather than an architectural rewrite.
+**Why:** At evenings-and-weekends pace, cross-repo version syncing (a Python change
+breaking a Java contract) creates friction disproportionate to the benefit of
+separate repos. A monorepo keeps everything reviewable and buildable together.
 
 ---
 
-## ADR-004: Supervisor pattern over hierarchical/swarm for multi-agent orchestration
+### 2026-09-26 — Plain PostgreSQL over TimescaleDB
 
-**Context:** LangGraph supports multiple multi-agent topologies: supervisor (single coordinator routes to specialists), hierarchical (nested supervisors), and swarm (peer-to-peer handoff).
+**Decision:** Use vanilla PostgreSQL 16 for all phases unless intraday
+(minute/tick-level) data across many instruments becomes a real requirement.
 
-**Decision:** Adopt the supervisor pattern for the sentiment/quant/fundamental agent team.
-
-**Rationale:** The supervisor pattern's routing logic has a single responsibility (deciding who should act next), which makes it more accurate and cheaper in LLM tokens than hierarchical delegation, and easier to reason about and debug for a developer new to LangGraph than a peer-to-peer swarm topology. Hierarchical and swarm patterns are more appropriate for larger agent counts or more dynamic, unpredictable collaboration patterns than the current fixed three-specialist team requires.
-
-**Consequences:** If the number of specialist agents grows significantly (e.g., separate agents per data source, or per asset class), a hierarchical supervisor-of-supervisors structure should be reconsidered rather than growing a single flat supervisor's routing logic indefinitely.
-
----
-
-## ADR-005: Phased LLM strategy — local-first, cloud when it matters
-
-**Context:** LLM API costs are non-trivial at scale but often negligible at hobby-project volume; local models via Ollama are free but generally weaker at complex reasoning than frontier cloud models.
-
-**Decision:**
-- **Phases 0-2 (learning, graph development, prompt iteration):** Ollama exclusively, using a tool-calling-capable model (e.g., Qwen3 8B/30B-A3B, or Hermes 4 14B) sized to available local hardware.
-- **Phases 3-4 (stabilizing graph, higher-quality synthesis needed):** Hybrid — local models for simpler extraction/classification tasks (sentiment classification, indicator formatting), a paid cloud API for the supervisor's final synthesis step where reasoning quality matters most.
-- **Phase 5+ (stable, production-like system):** Cloud API for supervisor and sentiment reasoning; local models retained only for high-volume, low-complexity tasks.
-
-**Rationale:** Iterating on prompts and graph structure benefits from unlimited, free, zero-latency-cost experimentation, which only local inference provides. Paid API costs become justified only once the system's structure is stable enough that spending is not wasted on debugging graph logic rather than improving recommendation quality.
-
-**Consequences:** Each agent node must support a configurable `model` parameter independent of other nodes, so that migrating individual agents from local to cloud models does not require structural changes to the graph.
+**Why:** At hobby scale (a handful of tickers, daily/hourly bars), TimescaleDB's
+hypertables and compression add operational complexity without a measurable
+benefit. Adopting it now would be premature optimization for a scale we don't have.
 
 ---
 
-## ADR-006: Jev AI (TypeSafe System-1 model) as a decision/classification layer, not a reasoning replacement
+### 2026-09-26 — REST first between Python and Java, gRPC deferred
 
-**Context:** Jev is a non-autoregressive "System-1" decision model (Choice/Score/Noul question types) released by TypeSafe AI in September 2026, offering millisecond-scale, low-cost, calibrated-confidence structured decisions rather than generated text.
+**Decision:** Python↔Java communication starts as plain REST/JSON. gRPC is a
+possible later upgrade, not a Phase 3 requirement.
 
-**Decision:** Use Jev AI for narrow classification/gating sub-tasks — sentiment classification (bullish/bearish/neutral), and a confidence gate between the Python recommendation layer and the Java execution layer (a `Noul` question determining whether a recommendation is confident enough to proceed to backtesting). Do not use it as a substitute for the reasoning LLM in the supervisor or specialist agents.
-
-**Rationale:** Jev's architecture is designed for exactly this class of problem — bounded, typed decisions — and is dramatically cheaper and faster than an LLM call for the same task. Reasoning tasks (constructing an argument for why an instrument looks attractive) still require a generative LLM.
-
-**Consequences:** Because Jev AI was in early access as of this decision, a fallback to LLM-based structured classification (via Ollama) must be maintained in case the Jev API proves unstable or changes materially.
-
----
-
-## ADR-007: ta4j for the Java backtesting engine
-
-**Context:** The Java Execution service needs to simulate strategy performance over historical price series.
-
-**Decision:** Use the ta4j library (`BarSeriesManager` for single-strategy backtests, `BacktestExecutor` for comparing multiple strategies over one series) rather than building a backtesting engine from scratch.
-
-**Rationale:** ta4j is a mature, actively maintained, open-source Java technical-analysis and backtesting library that directly matches the project's need to backtest multiple agent-derived strategies against the same historical series. Building an equivalent engine from scratch would consume disproportionate hobby-time budget on infrastructure rather than on the actual multi-agent research problem.
-
-**Consequences:** Backtest result fields (`pnl_absolute`, `sharpe_ratio`, `max_drawdown`, `num_trades`) are chosen to align with what ta4j readily exposes, minimizing custom calculation code.
+**Why:** REST is simpler to debug and sufficient for the request volume of a
+hobby project. Introducing gRPC now adds tooling overhead (proto definitions,
+codegen in two languages) before there's a performance problem to justify it.
 
 ---
 
-## ADR-008: Crypto-readiness baked into the core data model and execution interface
+### 2026-09-26 — Supervisor pattern for multi-agent orchestration, implemented as a custom graph
 
-**Context:** Cryptocurrency trading is an explicit future goal (Phase 6+), but is deliberately not implemented early, to avoid front-loading complexity into an already ambitious hobby project.
+**Decision:** Use LangGraph's supervisor pattern (specialists report to a single
+routing/synthesis step) rather than hierarchical or swarm patterns. Implemented
+as a hand-written `StateGraph` (fan-out to three specialist nodes, fan-in to a
+synthesis node) rather than adopting the `langgraph-supervisor` prebuilt package.
 
-**Decision:** Establish three seams now, without implementing crypto logic:
-1. `instrument.asset_type` distinguishes `EQUITY`/`CRYPTO` from Phase 0.
-2. Price fields use `NUMERIC(20,8)` precision, sufficient for crypto's finer-grained pricing, from Phase 0.
-3. The Java Execution service's order-placement logic is written against a Broker Adapter interface with a single "paper trading simulator" implementation from Phase 3; a second implementation (exchange testnet client) is added only in Phase 6+.
-
-**Rationale:** Retrofitting asset-class generality and an execution abstraction after the fact typically requires touching code that has since accumulated assumptions specific to equities. Establishing the seam early costs little (an enum value, a wider numeric type, one interface instead of one concrete class) and avoids a disruptive rewrite later.
-
-**Consequences:** No crypto-specific data provider, streaming ingestion, or exchange integration is implemented before Phase 6 — the seams exist, but remain unused until then.
-
----
-
-## ADR-009: Python/Alembic owns all schema migrations; Java is schema read-only
-
-**Context:** Both the Python and Java services read and write the same PostgreSQL database.
-
-**Decision:** All `CREATE`/`ALTER TABLE` operations happen exclusively through Alembic migrations defined against SQLAlchemy models in `data/models.py`. The Java service's ORM (if/when JPA/Hibernate is used) has `ddl-auto` disabled and never modifies schema.
-
-**Rationale:** Allowing two independent ORMs in two languages to both believe they own schema evolution is a well-known source of migration conflicts and silent schema drift. Assigning single ownership eliminates this failure mode entirely, at negligible cost (the Java service simply maps to tables that already exist).
-
-**Consequences:** Any schema change needed by the Java service (e.g., a new column required for backtest results) must be requested/implemented as a Python-side Alembic migration, even though the Java service is the primary consumer of that table.
+**Why:** Supervisor is the simplest multi-agent topology — routing/synthesis is
+a single responsibility, cheaper in tokens than hierarchical structures. The
+prebuilt `langgraph-supervisor` package is built around ReAct tool-calling
+agents sharing a `messages` state, which doesn't match our specialists (each is
+a fixed two-step pipeline: fetch data, call LLM once). A hand-written graph
+using our own `ResearchState` TypedDict was more transparent for someone new to
+LangGraph, and avoided learning a second abstraction on top of the first.
 
 ---
 
-## ADR-010: Docker Compose from day one; no orchestration platform (Kubernetes) yet
+### 2026-09-26 — Docker Compose from day one, even for local-only use
 
-**Context:** The project currently runs entirely on a single local development machine, with a single user.
+**Decision:** Every service gets a Dockerfile and is orchestrated via Docker
+Compose from its first commit, even though nothing is deployed anywhere yet.
 
-**Decision:** Every service is containerized and wired into `docker-compose.yml` from its introduction, but no container orchestration platform (Kubernetes, Nomad) is introduced at this stage. Likewise, message queues (RabbitMQ/Kafka), connection poolers (PgBouncer), and horizontal autoscaling are deferred.
+**Why:** This keeps the project "deployment-ready" without requiring an actual
+deployment decision now. Retrofitting containerization later, after
+environment-specific assumptions have crept into the code, is more expensive
+than starting with it.
 
-**Rationale:** These tools solve problems (multi-instance coordination, load distribution across replicas, decoupling producers/consumers at scale) that do not exist at current hobby scale, and introducing them now would be premature optimization that consumes limited development time without a corresponding benefit. However, because every service is already stateless with state externalized to PostgreSQL (see `architecture.md` §8), none of these tools are blocked by any current design choice — they can be introduced later purely as infrastructure additions.
+---
 
-**Consequences:** If the project ever needs multi-instance scaling, the migration path is: `docker compose --scale` for a first step, then Kubernetes with HPA/KEDA (scaling LangGraph workers on in-flight run depth rather than CPU) if load genuinely requires it. This is documented as a deferred, not rejected, capability.
+### 2026-09-26 — Alembic (Python) owns all schema migrations
+
+**Decision:** All DDL changes go through Alembic migrations in `data/`. The Java
+service connects to the same tables but runs with `hibernate.ddl-auto` disabled
+— it never creates or alters schema, only reads/writes rows.
+
+**Why:** Two languages independently managing schema changes on a shared database
+is a predictable source of migration conflicts. Designating a single owner
+removes that entire class of bug before it can happen.
+
+---
+
+### 2026-09-26 — Phased LLM strategy: local-first, cloud when it earns it
+
+**Decision:** Default target is Ollama running locally, at zero marginal cost,
+during early development. Paid cloud APIs (Anthropic, etc.) are adopted later,
+once the system is stable enough that response quality — not cost — becomes the
+binding constraint.
+
+**Why:** Early phases are about validating the graph topology and prompts, not
+about response quality. Spending money on cloud APIs before the pipeline itself
+is trustworthy is wasted spend.
+
+**Update (same day):** See the next entry — this default was immediately
+stress-tested by a hardware limitation.
+
+---
+
+### 2026-09-26 — Pluggable LLM provider factory; temporary move off local Ollama
+
+**Decision:** `agents/llm_provider.py` exposes `get_llm()`, selecting a provider
+via the `LLM_PROVIDER` environment variable (`ollama` | `groq` | `google`),
+rather than hardcoding `ChatOllama`. Currently defaulting to **Google Gemini**
+(`gemini-2.5-flash`, free tier via Google AI Studio) as the active provider,
+used by all specialist agents and the supervisor synthesis step.
+`get_active_model_label()` returns a `"provider:model"` string persisted
+alongside every recommendation/agent_opinion row, so providers can be compared
+later without guessing which one produced which row.
+
+**Why:** Local Ollama inference (`qwen3:8b`, then `qwen3:4b`) failed with
+out-of-memory errors during model load and later hung at 100% CPU with no
+response — the development machine cannot currently run even a 4B model
+comfortably on CPU. Two free cloud bridges were evaluated (Groq — fast, LPU
+hardware; Google Gemini — reliable native `json_schema` structured output).
+Gemini was selected as the active default after successful end-to-end tests on
+both the single-agent and multi-agent graphs.
+
+**Important:** This does **not** replace the local-first strategy — it is a
+stopgap. Switching back requires only changing `LLM_PROVIDER=ollama` in `.env`,
+with no code changes.
+
+---
+
+### 2026-09-26 — Reserved architectural hooks for future crypto support
+
+**Decision:** Even though crypto trading is not implemented until Phase 6+,
+three seams are built into the schema and service design now:
+
+1. `instrument.asset_type` distinguishes `EQUITY` / `CRYPTO` from the first
+   migration, instead of treating "stock" as an implicit assumption.
+2. `price_bar.timeframe` supports sub-daily granularity (`1h`, `1m`) and
+   numeric fields use `NUMERIC(20,8)` precision, sufficient for crypto's smaller
+   units, not just equity-scale prices.
+3. The Java Execution service (Phase 3+) is planned around a Broker Adapter
+   interface, with `PAPER_SIM` as the only implementation until a crypto
+   testnet adapter is added later.
+
+**Why:** These are cheap to decide now and expensive to retrofit later — none
+of them add meaningful complexity to Phases 0–3, but avoiding them would force
+a schema migration and interface rewrite when crypto is eventually added.
+
+---
+
+### 2026-09-26 — Considered but not yet adopted: Jev AI, Kronos
+
+**Decision:** Both evaluated as good architectural fits, deliberately deferred:
+
+- **Jev AI** (TypeSafe AI's "System One" decision model) — candidate for cheap,
+  fast, non-hallucinating classification/confidence-gating (e.g. a risk gate
+  between recommendation and execution). Early access; treat as experimental
+  with an LLM-based fallback.
+- **Kronos** — open-source foundation model for financial candlestick (K-line)
+  forecasting (AAAI 2026). Planned as a second tool (`kronos_forecast()`)
+  inside the Quant Agent, running locally via `transformers`/`torch`.
+
+**Why deferred:** Both add a new unknown on top of a system still being
+validated. Scheduled for a later iteration of the Quant Agent, once the Java
+execution layer (Phase 3) exists and the base pipeline has proven stable.
+
+---
+
+### 2026-09-26 — Nodes return partial state updates only (LangGraph fan-out/fan-in fix)
+
+**Decision:** All specialist and synthesis nodes return only the state keys
+they change (e.g. `{"quant_opinion": opinion}`), never a full copy of state
+(`{**state, ...}`).
+
+**Why:** The first version of the Phase 2 graph had all three specialist nodes
+return `{**state, <their_key>: opinion}`. Because they run in parallel
+(fan-out from `START`), all three simultaneously "wrote" the unchanged `ticker`
+value in the same superstep, and LangGraph raised
+`InvalidUpdateError: At key 'ticker': Can receive only one value per step` —
+concurrent writes to the same key require an `Annotated` reducer we hadn't
+defined (and don't need, since `ticker` never changes). Returning only the
+delta each node owns is the correct general LangGraph pattern, not just a fix.
+
+---
+
+### 2026-09-26 — Persistence added via table reflection, not duplicated schema
+
+**Decision:** `agents/persistence.py` writes to `analysis_run`, `recommendation`,
+and `agent_opinion` using SQLAlchemy Core with tables loaded via
+`Table(..., autoload_with=engine)` (reflection) rather than redeclaring
+`Base`/model classes inside `agents/`.
+
+**Why:** Schema ownership belongs to Alembic in `data/` (see the earlier
+decision). If `agents/` also declared its own ORM model classes for these
+tables, two independent schema definitions would need to stay in sync by hand.
+Reflection means `agents/` always sees whatever `data/`'s migrations actually
+created, with zero duplication.
+
+**Related:** `analysis_run`/`recommendation`/`agent_opinion` use `VARCHAR` +
+`CHECK` constraints instead of native Postgres `ENUM` types (unlike
+`instrument.asset_type`, which does use a native enum). This is deliberate:
+these tables will eventually be written by the Java service too (once
+`backtest_result` links to `recommendation` in Phase 3), and plain text with a
+`CHECK` constraint avoids the extra per-driver configuration that Postgres
+native enums require in JDBC.
+
+---
+
+### 2026-09-26 — Containerized the agents service; made DB host configurable per environment
+
+**Decision:** Added `agents/Dockerfile` (python:3.12-slim, installs
+`requirements.txt`, runs `uvicorn` on port 8000) and registered an `agents`
+service in `infra/docker-compose.yml`, networked alongside `postgres`. Both
+`agents/db.py` and `data/db.py` (and Alembic's `env.py`) now read
+`POSTGRES_HOST` from the environment (default `localhost`) instead of
+hardcoding it.
+
+**Why:** This was a gap against our own "Docker from day one" decision —
+`postgres` had a container from the start, but `agents/` did not. Inside the
+Docker network, the database is reachable at hostname `postgres` on the
+internal port `5432`, not `localhost:5433` (the host-mapped port used for
+local, non-containerized development). The compose file's `agents` service
+overrides `POSTGRES_HOST`/`POSTGRES_PORT` after loading the rest of `.env` via
+`env_file`, so the same `.env` serves both the containerized and the local
+`uvicorn --reload` workflow without duplication or manual edits.
+
+**Day-to-day workflow note:** `docker compose up --build` for `agents` is
+slower to iterate on than `uvicorn --reload` directly on the host, so the
+recommended pattern is: run Postgres in Docker at all times, run `agents/`
+directly on the host during active development, and periodically run the full
+`docker compose up --build` as a "does this still deploy cleanly" check.
+
+---
+
+*(Add new entries above this line as future phases introduce or revise decisions.)*
