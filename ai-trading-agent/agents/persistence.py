@@ -23,15 +23,18 @@ def _get_instrument_id(conn, ticker: str):
     return row[0]
 
 
-def save_analysis_run(ticker: str, thread_id: str, opinions: dict, final_recommendation, model_used: str) -> uuid.UUID:
+def save_analysis_run(ticker: str, thread_id: str, opinions: dict, final_recommendation, model_used: str) -> dict:
     """
     opinions: {"quant": AgentOpinion, "sentiment": AgentOpinion, "fundamental": AgentOpinion}
     Persists one analysis_run + one recommendation + three agent_opinion rows
-    in a single transaction. Returns the new analysis_run id.
+    in a single transaction. Returns both ids -- the recommendation_id is
+    needed by the caller to link a Java backtest run to this specific
+    recommendation.
     """
     with engine.begin() as conn:
         instrument_id = _get_instrument_id(conn, ticker)
         run_id = uuid.uuid4()
+        recommendation_id = uuid.uuid4()
         now = datetime.now(timezone.utc)
 
         conn.execute(
@@ -48,7 +51,7 @@ def save_analysis_run(ticker: str, thread_id: str, opinions: dict, final_recomme
 
         conn.execute(
             _recommendation.insert().values(
-                id=uuid.uuid4(),
+                id=recommendation_id,
                 analysis_run_id=run_id,
                 final_verdict=final_recommendation.final_verdict,
                 confidence=final_recommendation.confidence,
@@ -71,4 +74,4 @@ def save_analysis_run(ticker: str, thread_id: str, opinions: dict, final_recomme
                 )
             )
 
-    return run_id
+    return {"analysis_run_id": run_id, "recommendation_id": recommendation_id}

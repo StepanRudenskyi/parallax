@@ -1,5 +1,5 @@
 from sqlalchemy import (
-    Column, String, Boolean, Numeric, TIMESTAMP, BigInteger, ForeignKey,
+    Column, String, Boolean, Numeric, TIMESTAMP, DATE, BigInteger, ForeignKey,
     UniqueConstraint, CheckConstraint, Enum, Integer, Text, func
 )
 from sqlalchemy.orm import DeclarativeBase
@@ -116,3 +116,32 @@ class AgentOpinionRow(Base):
         CheckConstraint("agent_name IN ('SENTIMENT', 'QUANT', 'FUNDAMENTAL')", name="ck_agent_opinion_agent_name"),
         CheckConstraint("verdict IN ('BUY', 'HOLD', 'SELL')", name="ck_agent_opinion_verdict"),
     )
+
+
+class BacktestResultRow(Base):
+    """
+    Written by the Java Execution service (via JPA), not by Python — but the
+    table structure itself is still created and owned by this Alembic
+    migration, per the "single schema owner" rule. `instrument_id` is
+    required so a backtest run can always be identified even when it isn't
+    tied to a specific LLM recommendation (recommendation_id nullable).
+    """
+    __tablename__ = "backtest_result"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    instrument_id = Column(UUID(as_uuid=True), ForeignKey("instrument.id"), nullable=False)
+    recommendation_id = Column(UUID(as_uuid=True), ForeignKey("recommendation.id"), nullable=True)
+
+    strategy_name = Column(String(200), nullable=False)
+    start_date = Column(DATE, nullable=True)
+    end_date = Column(DATE, nullable=True)
+
+    bar_count = Column(Integer, nullable=True)
+    num_trades = Column(Integer, nullable=True)
+    position_count = Column(Integer, nullable=True)
+    pnl_percent = Column(Numeric(10, 6), nullable=True)
+    max_drawdown = Column(Numeric(10, 6), nullable=True)
+    sharpe_ratio = Column(Numeric(10, 6), nullable=True)
+
+    raw_result_json = Column(JSONB, nullable=True)
+    executed_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
