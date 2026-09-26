@@ -3,11 +3,12 @@ import uuid
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from execution_client import trigger_backtest
 from llm_provider import get_active_model_label
 from persistence import save_analysis_run
 from supervisor import research_graph
 
-app = FastAPI(title="AI Trading Research Agent - Multi-Agent Supervisor (Phase 2)")
+app = FastAPI(title="AI Trading Research Agent - Multi-Agent Supervisor (Phase 3)")
 
 
 class AnalyzeRequest(BaseModel):
@@ -38,7 +39,7 @@ def analyze(request: AnalyzeRequest):
     model_used = get_active_model_label()
 
     try:
-        analysis_run_id = save_analysis_run(
+        ids = save_analysis_run(
             ticker=ticker,
             thread_id=thread_id,
             opinions=opinions,
@@ -46,11 +47,13 @@ def analyze(request: AnalyzeRequest):
             model_used=model_used,
         )
     except ValueError as exc:
-        # Instrument not seeded yet -> still return the analysis, just unpersisted.
         raise HTTPException(status_code=422, detail=str(exc))
 
+    backtest = trigger_backtest(ticker, ids["recommendation_id"])
+
     return {
-        "analysis_run_id": str(analysis_run_id),
+        "analysis_run_id": str(ids["analysis_run_id"]),
+        "recommendation_id": str(ids["recommendation_id"]),
         "ticker": ticker,
         "agent_opinions": {name: _opinion_dict(op) for name, op in opinions.items()},
         "final_recommendation": {
@@ -58,6 +61,7 @@ def analyze(request: AnalyzeRequest):
             "confidence": final.confidence,
             "summary": final.summary,
         },
+        "backtest_context": backtest,
     }
 
 

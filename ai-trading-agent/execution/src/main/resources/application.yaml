@@ -1,0 +1,22 @@
+spring:
+  application:
+    name: execution-service
+
+  datasource:
+    url: jdbc:postgresql://${POSTGRES_HOST:localhost}:${POSTGRES_PORT:5433}/${POSTGRES_DB:trading_db}
+    username: ${POSTGRES_USER:trading_user}
+    password: ${POSTGRES_PASSWORD:trading_pass}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      # Never let Hibernate touch schema ? Alembic (Python) owns all DDL.
+      # See docs/decisions.md: "Alembic (Python) owns all schema migrations".
+      ddl-auto: none
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+server:
+  port: 8081
