@@ -10,7 +10,7 @@ spring:
 
   jpa:
     hibernate:
-      # Never let Hibernate touch schema ? Alembic (Python) owns all DDL.
+      # Never let Hibernate touch schema — Alembic (Python) owns all DDL.
       # See docs/decisions.md: "Alembic (Python) owns all schema migrations".
       ddl-auto: none
     open-in-view: false
@@ -20,3 +20,11 @@ spring:
 
 server:
   port: 8081
+
+logging:
+  level:
+    root: INFO
+    com.parallax.execution: INFO
+    org.hibernate.SQL: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} %-5level [%logger{36}] %msg%n"
